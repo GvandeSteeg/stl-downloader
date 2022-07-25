@@ -5,3 +5,6 @@ venv
 downloads
 .pyc
 __pycache__
+to_skip.txt
+run.sh
+wget.txt
