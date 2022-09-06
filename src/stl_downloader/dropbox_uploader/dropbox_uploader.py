@@ -7,13 +7,16 @@ from dropbox.exceptions import ApiError
 from dropbox.files import CommitInfo, ListFolderError, UploadSessionCursor
 from tqdm import tqdm
 
+from stl_downloader.database import File
+
 
 def upload(
-        access_token,
-        file_path,
-        target_path,
-        timeout=900,
-        chunk_size=4 * 1024 * 1024,
+    session,
+    access_token,
+    file_path,
+    target_path,
+    timeout=900,
+    chunk_size=4 * 1024 * 1024,
 ):
     dbx = dropbox.Dropbox(access_token, timeout=timeout)
 
@@ -49,8 +52,15 @@ def upload(
                 commit = CommitInfo(path=target_path)
                 while f.tell() < file_size:
                     if (file_size - f.tell()) <= chunk_size:
-                        dbx.files_upload_session_finish(f.read(chunk_size), cursor, commit)
+                        dbx.files_upload_session_finish(
+                            f.read(chunk_size), cursor, commit
+                        )
                         print(file_path, "uploaded.")
+                        db_file = (
+                            session.query(File).where(File.name == base_name).one()
+                        )
+                        db_file.uploaded = True
+                        session.commit()
 
                     else:
                         dbx.files_upload_session_append_v2(f.read(chunk_size), cursor)
@@ -59,20 +69,21 @@ def upload(
                         pbar.update(chunk_size)
 
 
-def start_upload(path: str, prefix: str):
-    outpath = path.replace(prefix, "")
+def start_upload(path: str, prefix: str, session):
+    outpath = path.replace(str(prefix), "")
     upload(
+        session,
         os.environ["DROPBOX_ACCESS_TOKEN"],
         path,
         outpath,
     )
 
 
-def find_files_and_start_upload(folder: Path):
+def find_files_and_start_upload(folder: Path, session):
     total_files = []
     for root, dirs, files in os.walk(folder.resolve()):
         if files:
             total_files.extend([os.path.join(root, file) for file in files])
 
     with Pool(25) as p:
-        p.map(start_upload, ((path, folder) for path in total_files))
+        p.starmap(start_upload, ((path, folder, session) for path in total_files))
