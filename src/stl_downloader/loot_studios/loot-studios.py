@@ -2,39 +2,66 @@ import logging
 import os
 import shutil
 import ssl
+import subprocess
 import urllib.request as urlrequest
-from multiprocessing import Manager, Pool, Queue, cpu_count
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from urllib.error import URLError
 
 from datetime import datetime
 import dotenv
+import requests
+from chromedriver_py import binary_path
 from retry import retry
 from selenium import webdriver
 from selenium.common import NoSuchElementException, WebDriverException
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, subqueryload
 from sqlalchemy.sql.functions import now
 
 import stl_downloader.dropbox_uploader as dropbox
-from stl_downloader.database import Base, Collection, File, engine
+from stl_downloader import DOWNLOADS
+from stl_downloader.database import Base, Collection, File, engine, initializer
 
 # noinspection PyUnresolvedReferences,PyProtectedMember
 ssl._create_default_https_context = ssl._create_unverified_context
 dotenv.load_dotenv()
 
-DOWNLOADS = Path("downloads")
 today = datetime.today()
 
 
-def download(db_file: File):
-    filename = db_file.name
-    print(f"Downloading {filename} from {db_file.collection}")
+def update_chromedriver():
+    main_chrome_version = (
+        subprocess.check_output(
+            [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "--version",
+            ],
+            encoding="UTF-8",
+        )
+        .strip()
+        .split()[-1]
+        .split(".")[0]
+    )
+    subprocess.run(
+        [
+            "pip",
+            "install",
+            f"chromedriver-py>={main_chrome_version},<{main_chrome_version + 1}",
+        ],
+        check=True,
+    )
+
+
+def download(url: str, filepath: Path, collection: str):
+    filename = filepath.name
+    print(f"Downloading {filename} from {collection}")
     try:
-        with urlrequest.urlopen(db_file.url) as response, open(
-            db_file.path, "wb"
+        with urlrequest.urlopen(url) as response, open(
+            filepath, "wb"
         ) as out_file:
             shutil.copyfileobj(response, out_file)
     except URLError as err:
@@ -44,8 +71,8 @@ def download(db_file: File):
             db_file = (
                 session.query(File)
                 .filter(
-                    (File.name == db_file.name)
-                    & (File.collection == db_file.collection)
+                    (File.name == filename)
+                    & (File.collection_name == collection)
                 )
                 .one()
             )
@@ -54,24 +81,20 @@ def download(db_file: File):
         print(f"{filename} downloaded")
 
 
-def initializer():
-    """ensure the parent proc's database connections are not touched
-    in the new connection pool"""
-    engine.dispose(close=False)
-
-
 def download_all(engine):
     with Session(engine) as session:
         to_download = session.query(File).filter(File.downloaded.is_(False)).all()
 
     try:
         with Pool(cpu_count(), initializer) as pool:
-            pool.map(
+            pool.starmap(
                 download,
-                to_download,
+                ((f.url, Path(f.path), f.collection_name) for f in to_download),
             )
     finally:
         with Session(engine) as session:
+            # Check if all files from a collection have finished downloading
+            # and set the collection to be skipped in the future if true
             collections = session.query(Collection).all()
             for collection in collections:
                 finished = (
@@ -79,14 +102,14 @@ def download_all(engine):
                     .filter(
                         (
                             File.downloaded.is_(True)
-                            & (File.collection == collection.name)
+                            & (File.collection_name == collection.name)
                         )
                     )
                     .count()
                 )
                 files_from_collection = (
                     session.query(File)
-                    .where(File.collection == collection.name)
+                    .where(File.collection_name == collection.name)
                     .count()
                 )
                 if (
@@ -117,7 +140,7 @@ class LootStudios:
                 .all()
             }
 
-        with webdriver.Chrome() as driver:
+        with webdriver.Chrome(service=Service(binary_path)) as driver:
             self.driver_get(driver, "https://www.loot-studios.com/login")
             driver.find_element(value="member_email").send_keys(os.environ["EMAIL"])
             driver.find_element(value="member_password").send_keys(
@@ -170,7 +193,7 @@ class LootStudios:
                         collection_files = {
                             f.name: f
                             for f in session.query(File)
-                            .where(File.collection == db_collection.name)
+                            .where(File.collection_name == db_collection.name)
                             .all()
                         }
 
@@ -212,7 +235,11 @@ class LootStudios:
 
                             for d in downloads:
                                 url = d.get_attribute("href")
-                                filepath = path.joinpath(d.text)
+                                name = Path(d.text)
+                                if not name.suffix:
+                                    # Going on an assumption here, but so far not incorrect
+                                    name = d.text + ".png"
+                                filepath = path.joinpath(name)
                                 try:
                                     db_file = collection_files[filepath.name]
                                 except KeyError:
@@ -226,7 +253,7 @@ class LootStudios:
                                             delete(File).filter(
                                                 (File.name == filepath.name)
                                                 & (
-                                                    File.collection
+                                                    File.collection_name
                                                     == db_collection.name
                                                 )
                                             )
@@ -238,7 +265,7 @@ class LootStudios:
                                     db_file = File(
                                         name=filepath.name,
                                         url=url,
-                                        collection=db_collection.name,
+                                        collection_name=db_collection.name,
                                         path=str(filepath.resolve()),
                                         changed=now(),
                                     )
@@ -255,6 +282,8 @@ class LootStudios:
             self.get_data()
         except WebDriverException as err:
             logging.warning(str(err))
+            update_chromedriver()
+            self.get_data()
 
 
 if __name__ == "__main__":
@@ -268,4 +297,4 @@ if __name__ == "__main__":
     retriever = LootStudios(engine)
     retriever.find_and_write_data()
     download_all(engine)
-    # dropbox.find_files_and_start_upload(DOWNLOADS, engine)
+    dropbox.find_files_and_start_upload(engine, "Loot Studios")

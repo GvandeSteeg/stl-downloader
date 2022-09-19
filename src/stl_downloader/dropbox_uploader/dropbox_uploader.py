@@ -1,46 +1,51 @@
 import os
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import dropbox
 from dropbox.exceptions import ApiError
 from dropbox.files import CommitInfo, ListFolderError, UploadSessionCursor
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 from tqdm import tqdm
 
-from stl_downloader.database import File
-
+from stl_downloader import DOWNLOADS
+from stl_downloader.database import File, engine, initializer
 
 def upload(
-    session,
-    access_token,
-    file_path,
-    target_path,
+    file_path: Path,
+    collection: str,
+    target_path: Path,
     timeout=900,
     chunk_size=4 * 1024 * 1024,
 ):
-    dbx = dropbox.Dropbox(access_token, timeout=timeout)
+    dbx = dropbox.Dropbox(os.environ["DROPBOX_ACCESS_TOKEN"], timeout=timeout)
 
     try:
         existing_files = {
-            i.name for i in dbx.files_list_folder(os.path.dirname(target_path)).entries
+            i.name for i in dbx.files_list_folder(str(target_path.parent)).entries
         }
     except ApiError as err:
         if isinstance(err.args[1], ListFolderError):
             existing_files = {}
         else:
             raise
-    base_name = os.path.basename(file_path)
-    if base_name in existing_files:
-        print(file_path, "already exists. Skipping.")
-        return
 
-    with open(file_path, "rb") as f:
-        print("Uploading", file_path)
+    target_path = str(target_path)
+    with open(file_path, "rb") as f, Session(engine) as session:
+        base_name = file_path.name
+        if base_name in existing_files:
+            print(base_name, "already exists. Skipping.")
+            db_file = session.query(File).filter((File.name == file_path.name) & (File.collection_name == collection)).one()
+            db_file.uploaded = True
+            session.commit()
+            return
+
         file_size = os.path.getsize(file_path)
         if file_size <= chunk_size:
             print(dbx.files_upload(f.read(), target_path))
         else:
-            with tqdm(total=file_size, desc=os.path.basename(file_path)) as pbar:
+            with tqdm(total=file_size, desc=file_path.name) as pbar:
                 upload_session_start_result = dbx.files_upload_session_start(
                     f.read(chunk_size)
                 )
@@ -55,12 +60,13 @@ def upload(
                         dbx.files_upload_session_finish(
                             f.read(chunk_size), cursor, commit
                         )
-                        print(file_path, "uploaded.")
-                        db_file = (
-                            session.query(File).where(File.name == base_name).one()
-                        )
+                        db_file = session.query(File).filter(
+                            (File.name == file_path.name) &
+                            (File.collection_name == collection)
+                        ).one()
                         db_file.uploaded = True
                         session.commit()
+                        print(base_name, "uploaded.")
 
                     else:
                         dbx.files_upload_session_append_v2(f.read(chunk_size), cursor)
@@ -69,21 +75,26 @@ def upload(
                         pbar.update(chunk_size)
 
 
-def start_upload(path: str, prefix: str, session):
-    outpath = path.replace(str(prefix), "")
+def start_upload(filepath: Path, collection: str, site_name: str):
+    p = filepath
+    outpath = Path(
+        "/" + site_name,
+        p.relative_to(*p.parts[: p.parts.index(str(DOWNLOADS)) + 1], ""),
+    )
     upload(
-        session,
-        os.environ["DROPBOX_ACCESS_TOKEN"],
-        path,
+        filepath,
+        collection,
         outpath,
     )
 
 
-def find_files_and_start_upload(folder: Path, session):
-    total_files = []
-    for root, dirs, files in os.walk(folder.resolve()):
-        if files:
-            total_files.extend([os.path.join(root, file) for file in files])
+def find_files_and_start_upload(engine: Engine, site_name: str):
+    with Session(engine) as session:
+        total_files = (
+            session.query(File)
+            .filter((File.downloaded.is_(True)) & (File.uploaded.is_(False)))
+            .all()
+        )
 
-    with Pool(25) as p:
-        p.starmap(start_upload, ((path, folder, session) for path in total_files))
+    with Pool(cpu_count(), initializer) as pool:
+        pool.starmap(start_upload, ((Path(db_file.path), db_file.collection_name, site_name) for db_file in total_files))

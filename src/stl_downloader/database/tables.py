@@ -11,7 +11,7 @@ class Collection(Base):
     name = Column(String, nullable=True)
     skip = Column(Boolean, default=False)
 
-    files = relationship("File")
+    files = relationship("File", backref="collection", cascade="all, delete-orphan")
 
 
 class File(Base):
@@ -23,4 +23,4 @@ class File(Base):
     changed = Column(DateTime)
     downloaded = Column(Boolean, default=False)
     uploaded = Column(Boolean, default=False)
-    collection = Column(String, ForeignKey("collection.name"), primary_key=True)
+    collection_name = Column(String, ForeignKey(Collection.name), primary_key=True)
