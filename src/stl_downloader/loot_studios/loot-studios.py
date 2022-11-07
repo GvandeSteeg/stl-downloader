@@ -1,29 +1,26 @@
 import logging
 import os
+import re
 import shutil
 import ssl
 import subprocess
 import urllib.parse
 import urllib.request as urlrequest
+from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from time import sleep
 from urllib.error import URLError
-import re
 
-from datetime import datetime
 import dotenv
-import requests
 from chromedriver_py import binary_path
 from retry import retry
 from selenium import webdriver
-from selenium.common import NoSuchElementException, WebDriverException
-from selenium.webdriver import ActionChains
+from selenium.common import WebDriverException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from sqlalchemy import delete
-from sqlalchemy.exc import IntegrityError, PendingRollbackError
-from sqlalchemy.orm import Session, joinedload, subqueryload
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.functions import now
 
 import stl_downloader.dropbox_uploader as dropbox
@@ -65,9 +62,7 @@ def download(url: str, filepath: Path, collection: str):
     filename = filepath.name
     print(f"Downloading {filename} from {collection}")
     try:
-        with urlrequest.urlopen(url) as response, open(
-            filepath, "wb"
-        ) as out_file:
+        with urlrequest.urlopen(url) as response, open(filepath, "wb") as out_file:
             shutil.copyfileobj(response, out_file)
     except URLError as err:
         print(err, "-", filename)
@@ -75,10 +70,7 @@ def download(url: str, filepath: Path, collection: str):
         with Session(engine) as session:
             db_file = (
                 session.query(File)
-                .filter(
-                    (File.name == filename)
-                    & (File.collection_name == collection)
-                )
+                .filter((File.name == filename) & (File.collection_name == collection))
                 .one()
             )
             db_file.downloaded = True
@@ -147,18 +139,24 @@ class LootStudios:
 
         with webdriver.Chrome(service=Service(binary_path)) as driver:
             self.driver_get(driver, "https://lootstudios.com/login")
-            driver.find_element(By.CLASS_NAME, "login-username").find_element(value="user_login").send_keys(os.environ["EMAIL"])
-            driver.find_element(By.CLASS_NAME, "login-password").find_element(value="user_pass").send_keys(os.environ["LOOT_PASSWORD"].strip())
+            driver.find_element(By.CLASS_NAME, "login-username").find_element(
+                value="user_login"
+            ).send_keys(os.environ["EMAIL"])
+            driver.find_element(By.CLASS_NAME, "login-password").find_element(
+                value="user_pass"
+            ).send_keys(os.environ["LOOT_PASSWORD"].strip())
             driver.execute_script('jQuery("#loginform").submit()')
 
-            self.driver_get(
-                driver, f"https://lootstudios.com/my-loots"
-            )
+            self.driver_get(driver, f"https://lootstudios.com/my-loots")
 
-            collections = sorted({
-                l.get_attribute("href")
-                for l in driver.find_element(By.XPATH, "/html/body/main/section/div/div[3]").find_elements(By.TAG_NAME, "a")
-            })
+            collections = sorted(
+                {
+                    l.get_attribute("href")
+                    for l in driver.find_element(
+                        By.XPATH, "/html/body/main/section/div/div[3]"
+                    ).find_elements(By.TAG_NAME, "a")
+                }
+            )
 
             for collection in collections:
                 if collection in to_skip:
@@ -195,22 +193,42 @@ class LootStudios:
                     os.makedirs(mainfolder, exist_ok=True)
 
                     html = driver.page_source
-                    zip_files = set(re.findall(r"https://storage\.googleapis\.com.*?\.zip", html, re.I))
-                    maps = {m for m in re.findall(r"https://lootstudios\.com.*?\.zip", html, re.I) if not "storage" in m}
-                    jpg_files = set(re.findall(r"https://lootstudios\.com.*?\.jpg", html, re.I))
+                    zip_files = set(
+                        re.findall(
+                            r"https://storage\.googleapis\.com.*?\.zip", html, re.I
+                        )
+                    )
+                    maps = {
+                        m
+                        for m in re.findall(
+                            r"https://lootstudios\.com.*?\.zip", html, re.I
+                        )
+                        if not "storage" in m
+                    }
+                    jpg_files = set(
+                        re.findall(r"https://lootstudios\.com.*?\.jpg", html, re.I)
+                    )
 
                     download_files = zip_files | maps | jpg_files
                     for dl_file in download_files:
                         normalised_url = urllib.parse.unquote(dl_file)
-                        if "Download" in normalised_url:  # A "Download All" folder, ignore
+                        if (
+                            "Download" in normalised_url
+                        ):  # A "Download All" folder, ignore
                             continue
 
-                        if "googleapis" in dl_file and dl_file.endswith("zip"):  # This is a STL file
-                            relative_url = normalised_url.split("bucket/")[-1].split("/")
+                        if "googleapis" in dl_file and dl_file.endswith(
+                            "zip"
+                        ):  # This is a STL file
+                            relative_url = normalised_url.split("bucket/")[-1].split(
+                                "/"
+                            )
 
                             filepath = mainfolder.joinpath(Path(*relative_url[1:]))
 
-                        elif "lootstudios" in dl_file and dl_file.endswith(("zip", "jpg")):  # Map or encounter
+                        elif "lootstudios" in dl_file and dl_file.endswith(
+                            ("zip", "jpg")
+                        ):  # Map or encounter
                             filepath = mainfolder.joinpath("Misc", Path(dl_file).name)
 
                         try:
@@ -225,10 +243,7 @@ class LootStudios:
                                 session.execute(
                                     delete(File).filter(
                                         (File.name == filepath.name)
-                                        & (
-                                            File.collection_name
-                                            == db_collection.name
-                                        )
+                                        & (File.collection_name == db_collection.name)
                                     )
                                 )
                                 session.commit()

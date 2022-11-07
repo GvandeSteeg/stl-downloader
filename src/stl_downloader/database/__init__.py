@@ -1,7 +1,6 @@
-from sqlalchemy.pool import NullPool
-
-from .tables import File, Collection, Base
 from sqlalchemy import create_engine
+
+from .tables import Base, Collection, File
 
 engine = create_engine("sqlite:///loot_studios.db")
 
