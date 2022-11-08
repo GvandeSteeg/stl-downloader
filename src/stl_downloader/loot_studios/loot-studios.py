@@ -211,6 +211,7 @@ class LootStudios:
 
                     download_files = zip_files | maps | jpg_files
                     for dl_file in download_files:
+                        safe_url = dl_file.replace(" ", r"\ ")
                         normalised_url = urllib.parse.unquote(dl_file)
                         if (
                             "Download" in normalised_url
@@ -252,7 +253,7 @@ class LootStudios:
                         if db_file is None:
                             db_file = File(
                                 name=filepath.name,
-                                url=normalised_url,
+                                url=safe_url,
                                 collection_name=db_collection.name,
                                 path=str(filepath.resolve()),
                                 changed=now(),
@@ -267,7 +268,7 @@ class LootStudios:
                                 new_name = "_".join((relative_url[-2], filepath.name))
                                 db_file = File(
                                     name=new_name,
-                                    url=normalised_url,
+                                    url=safe_url,
                                     collection_name=db_collection.name,
                                     path=str(filepath.resolve()),
                                     changed=now(),
