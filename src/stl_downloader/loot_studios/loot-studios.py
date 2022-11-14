@@ -276,7 +276,7 @@ class LootStudios:
                                 session.add(db_file)
                                 session.commit()
 
-                        self.logger.info("Found %s", filepath.name)
+                            self.logger.info("Found %s", filepath.name)
 
     def find_and_write_data(self):
         try:
