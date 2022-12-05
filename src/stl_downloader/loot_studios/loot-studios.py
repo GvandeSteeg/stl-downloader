@@ -159,6 +159,10 @@ class LootStudios:
             )
 
             for collection in collections:
+                # Promotional pages can also appear in collections, so need to skip those as they don't hold data
+                if "loot/" not in collection:
+                    continue
+
                 if collection in to_skip:
                     continue
 
