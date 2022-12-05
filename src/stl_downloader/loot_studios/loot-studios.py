@@ -290,6 +290,16 @@ class LootStudios:
             update_chromedriver()
 
 
+def delete_finished_uploads(engine):
+    # TODO add deleted column
+    with Session(engine) as session:
+        done = session.query(File).filter(File.uploaded.is_(True)).all()
+
+        for f in done:
+            if os.path.exists(f.path):
+                os.remove(f.path)
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -302,3 +312,4 @@ if __name__ == "__main__":
     retriever.find_and_write_data()
     download_all(engine)
     dropbox.find_files_and_start_upload(engine, "Loot Studios")
+    delete_finished_uploads(engine)
